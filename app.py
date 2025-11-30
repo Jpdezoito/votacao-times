@@ -1,22 +1,33 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import sqlite3
+import os
+import hashlib
 
 app = Flask(__name__)
-CORS(app)  # permite acesso do seu HTML (Live Server / outro host)
+CORS(app)
 
 DB_NAME = "votacao.db"
-
 
 def get_db():
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     return conn
 
+def hash_password(pwd):
+    return hashlib.sha256(pwd.encode()).hexdigest()
 
 def init_db():
     conn = get_db()
     cur = conn.cursor()
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nickname TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL
+        )
+    """)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS players (
@@ -30,6 +41,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             player_id INTEGER NOT NULL,
             score REAL NOT NULL,
+            voter_name TEXT,
             FOREIGN KEY(player_id) REFERENCES players(id)
         )
     """)
@@ -37,6 +49,67 @@ def init_db():
     conn.commit()
     conn.close()
 
+init_db()
+
+# ------------------------------------------------------------
+# CADASTRO
+# ------------------------------------------------------------
+@app.route("/register", methods=["POST"])
+def register():
+    data = request.get_json()
+    nickname = (data.get("nickname") or "").strip()
+    password = (data.get("password") or "").strip()
+
+    if not nickname or not password:
+        return jsonify({"error": "Preencha apelido e senha"}), 400
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    try:
+        # cria o usuário (login)
+        cur.execute(
+            "INSERT INTO users (nickname, password) VALUES (?, ?)",
+            (nickname, hash_password(password))
+        )
+        # cria também o jogador com o mesmo apelido
+        cur.execute(
+            "INSERT INTO players (name) VALUES (?)",
+            (nickname,)
+        )
+
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True})
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"error": "Apelido já está em uso"}), 400
+
+
+# ------------------------------------------------------------
+# LOGIN
+# ------------------------------------------------------------
+@app.route("/login", methods=["POST"])
+def login():
+    data = request.get_json()
+    nickname = (data.get("nickname") or "").strip()
+    password = (data.get("password") or "").strip()
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("SELECT * FROM users WHERE nickname = ?", (nickname,))
+    user = cur.fetchone()
+
+    if user and user["password"] == hash_password(password):
+        return jsonify({"ok": True})
+
+    return jsonify({"error": "Apelido ou senha incorretos"}), 400
+
+
+# ------------------------------------------------------------
+# RESTO DO CÓDIGO DA VOTAÇÃO (igual ao anterior)
+# ------------------------------------------------------------
 
 @app.route("/players", methods=["GET"])
 def get_players():
@@ -105,10 +178,11 @@ def vote():
     data = request.get_json()
     player_id = data.get("player_id")
     score = data.get("score")
+    voter_name = (data.get("voter") or "").strip()
 
     try:
         score = float(score)
-    except (TypeError, ValueError):
+    except:
         return jsonify({"error": "Nota inválida"}), 400
 
     if score < 0 or score > 10:
@@ -117,14 +191,8 @@ def vote():
     conn = get_db()
     cur = conn.cursor()
 
-    # verifica se player existe
-    cur.execute("SELECT id FROM players WHERE id = ?", (player_id,))
-    if cur.fetchone() is None:
-        conn.close()
-        return jsonify({"error": "Jogador não encontrado"}), 404
-
-    cur.execute("INSERT INTO votes (player_id, score) VALUES (?, ?)",
-                (player_id, score))
+    cur.execute("INSERT INTO votes (player_id, score, voter_name) VALUES (?, ?, ?)",
+                (player_id, score, voter_name))
     conn.commit()
     conn.close()
 
@@ -132,5 +200,5 @@ def vote():
 
 
 if __name__ == "__main__":
-    init_db()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
