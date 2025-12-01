@@ -42,7 +42,8 @@ def init_db():
             player_id INTEGER NOT NULL,
             score REAL NOT NULL,
             voter_name TEXT,
-            FOREIGN KEY(player_id) REFERENCES players(id)
+            FOREIGN KEY(player_id) REFERENCES players(id),
+            UNIQUE(player_id, voter_name)
         )
     """)
 
@@ -198,12 +199,15 @@ def vote():
     conn = get_db()
     cur = conn.cursor()
 
-    cur.execute("INSERT INTO votes (player_id, score, voter_name) VALUES (?, ?, ?)",
-                (player_id, score, voter_name))
-    conn.commit()
-    conn.close()
-
-    return jsonify({"ok": True})
+    try:
+        cur.execute("INSERT INTO votes (player_id, score, voter_name) VALUES (?, ?, ?)",
+                    (player_id, score, voter_name))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True})
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"error": "Você já votou neste jogador!"}), 400
 
 
 if __name__ == "__main__":
