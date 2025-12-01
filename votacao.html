@@ -163,11 +163,18 @@
             tr.appendChild(tdVotos);
 
             const tdRemove = document.createElement("td");
-            const rbtn = document.createElement("button");
-            rbtn.textContent = "X";
-            rbtn.className = "remove-btn";
-            rbtn.onclick = () => removePlayer(p.id);
-            tdRemove.appendChild(rbtn);
+
+            // Só mostra o botão X para o próprio jogador logado
+            if (p.name === currentUser) {
+                const rbtn = document.createElement("button");
+                rbtn.textContent = "X";
+                rbtn.className = "remove-btn";
+                rbtn.onclick = () => removePlayer(p.id);
+                tdRemove.appendChild(rbtn);
+            } else {
+                tdRemove.textContent = "-";
+            }
+
             tr.appendChild(tdRemove);
 
             tbody.appendChild(tr);
@@ -189,7 +196,7 @@
             return;
         }
 
-        await fetch(API_URL + "/vote", {
+        const res = await fetch(API_URL + "/vote", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({
@@ -198,6 +205,13 @@
                 voter: currentUser
             })
         });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+            alert(data.error || "Erro ao votar.");
+            return;
+        }
 
         input.value = "";
         await loadPlayers();
@@ -209,13 +223,27 @@
             return;
         }
 
-        if (!confirm("Remover este jogador e seus votos?")) return;
+        if (!confirm("Remover SEU próprio cadastro e todos os seus votos?")) return;
 
-        await fetch(API_URL + "/players/" + id, {
-            method: "DELETE"
+        const res = await fetch(API_URL + "/players/" + id, {
+            method: "DELETE",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                requester: currentUser
+            })
         });
 
-        await loadPlayers();
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+            alert(data.error || "Erro ao remover jogador.");
+            return;
+        }
+
+        alert("Seu cadastro foi removido. Você será deslogado.");
+        logout();
     }
 
     (function init() {
