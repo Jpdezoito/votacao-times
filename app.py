@@ -203,11 +203,18 @@ def vote():
         conn.close()
         return jsonify({"error": "player_id é obrigatório"}), 400
 
-    # garante que o jogador exista
-    cur.execute("SELECT id FROM players WHERE id = ?", (player_id,))
-    if not cur.fetchone():
+    # garante que o jogador exista e obtém o nome
+    cur.execute("SELECT id, name FROM players WHERE id = ?", (player_id,))
+    player_row = cur.fetchone()
+    if not player_row:
         conn.close()
         return jsonify({"error": "Jogador não encontrado"}), 400
+
+    # evita votar em si mesmo (apelido igual ao do jogador)
+    player_name = (player_row[1] if isinstance(player_row, tuple) else player_row["name"]).strip()
+    if voter_name and player_name and voter_name == player_name:
+        conn.close()
+        return jsonify({"error": "Não é permitido votar em si mesmo."}), 400
 
     try:
         cur.execute("INSERT INTO votes (player_id, score, voter_name) VALUES (?, ?, ?)",
