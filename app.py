@@ -219,22 +219,21 @@ def vote():
     try:
         # verifica se já existe voto deste votante para este jogador
         cur.execute("SELECT id FROM votes WHERE player_id = ? AND voter_name = ?", (player_id, voter_name))
-        existed = cur.fetchone() is not None
-
-        # usa UPSERT para inserir ou atualizar o voto
-        # sintaxe SQLite: ON CONFLICT(player_id, voter_name) DO UPDATE SET score=excluded.score
-        cur.execute(
-            """
-            INSERT INTO votes (player_id, score, voter_name)
-            VALUES (?, ?, ?)
-            ON CONFLICT(player_id, voter_name) DO UPDATE SET score=excluded.score
-            """,
-            (player_id, score, voter_name)
-        )
+        row = cur.fetchone()
+        if row:
+            # atualiza o voto existente
+            vote_id = row[0] if isinstance(row, tuple) else row["id"]
+            cur.execute("UPDATE votes SET score = ? WHERE id = ?", (score, vote_id))
+            updated = True
+        else:
+            # insere novo voto
+            cur.execute("INSERT INTO votes (player_id, score, voter_name) VALUES (?, ?, ?)",
+                        (player_id, score, voter_name))
+            updated = False
 
         conn.commit()
         conn.close()
-        return jsonify({"ok": True, "updated": existed})
+        return jsonify({"ok": True, "updated": updated})
     except Exception as e:
         # captura outras exceções e retorna mensagem para debugging
         conn.close()
