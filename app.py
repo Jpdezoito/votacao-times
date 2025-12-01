@@ -15,11 +15,11 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 
 db_url = os.environ.get("DATABASE_URL")
 
-# Ajuste necessário para drivers antigos
+# Ajuste necessário para alguns providers antigos (não é seu caso, mas deixo)
 if db_url and db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
 
-# Caso esteja rodando local
+# Caso esteja rodando local sem DATABASE_URL, usa sqlite
 if not db_url:
     db_url = "sqlite:///votacao.db"
 
@@ -30,7 +30,7 @@ engine = create_engine(db_url, future=True)
 # FUNÇÕES AUXILIARES
 # -------------------------------
 
-def hash_password(pwd):
+def hash_password(pwd: str) -> str:
     return hashlib.sha256(pwd.encode()).hexdigest()
 
 
@@ -155,7 +155,7 @@ def get_players():
 
 
 # -------------------------------
-# ADICIONAR PLAYER
+# ADICIONAR PLAYER (se quiser usar depois)
 # -------------------------------
 @app.route("/players", methods=["POST"])
 def add_player():
@@ -175,14 +175,49 @@ def add_player():
 
 
 # -------------------------------
-# REMOVER PLAYER
+# REMOVER PLAYER (apenas o próprio)
 # -------------------------------
 @app.route("/players/<int:player_id>", methods=["DELETE"])
 def delete_player(player_id):
+    # JSON esperado: { "requester": "apelido_logado" }
+    data = request.get_json(silent=True) or {}
+    requester = (data.get("requester") or "").strip()
+
+    if not requester:
+        return jsonify({"error": "Usuário não informado."}), 400
 
     with engine.begin() as conn:
-        conn.execute(text("DELETE FROM votes WHERE player_id = :id"), {"id": player_id})
-        conn.execute(text("DELETE FROM players WHERE id = :id"), {"id": player_id})
+        player = conn.execute(
+            text("SELECT id, name FROM players WHERE id = :id"),
+            {"id": player_id}
+        ).mappings().first()
+
+        if not player:
+            return jsonify({"error": "Jogador não encontrado."}), 404
+
+        # só permite remover o próprio cadastro
+        if player["name"] != requester:
+            return jsonify(
+                {"error": "Você só pode remover o seu próprio cadastro."}
+            ), 403
+
+        # remove votos desse jogador
+        conn.execute(
+            text("DELETE FROM votes WHERE player_id = :id"),
+            {"id": player_id}
+        )
+
+        # remove da tabela players
+        conn.execute(
+            text("DELETE FROM players WHERE id = :id"),
+            {"id": player_id}
+        )
+
+        # remove também da tabela users (login)
+        conn.execute(
+            text("DELETE FROM users WHERE nickname = :nick"),
+            {"nick": requester}
+        )
 
     return jsonify({"ok": True})
 
@@ -215,7 +250,8 @@ def vote():
     if not player:
         return jsonify({"error": "Jogador não encontrado"}), 400
 
-    if voter_name == player["name"]:
+    # proíbe votar em si mesmo
+    if voter_name and voter_name == player["name"]:
         return jsonify({"error": "Não é permitido votar em si mesmo."}), 400
 
     try:
