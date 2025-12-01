@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Login</title>
+<style>
+body { font-family: Arial; text-align:center; margin-top:80px; background:#f4f4f4; }
+.container {
+    background:#fff; padding:40px; display:inline-block; border-radius:12px;
+    box-shadow:0 0 12px rgba(0,0,0,0.1);
+}
+input { padding:10px; width:260px; margin:10px; border-radius:8px; border:1px solid #ccc; }
+button { padding:12px 20px; cursor:pointer; background:#007bff; color:white; border:none; border-radius:8px; }
+button:hover { background:#005fcc; }
+</style>
+</head>
+<body>
+
+<div class="container">
+<h1>Entrar</h1>
+
+<input type="text" id="nickname" placeholder="Apelido"><br>
+<input type="password" id="password" placeholder="Senha"><br>
+
+<button onclick="login()">Entrar</button>
+<br><br>
+<button onclick="window.location='index.html'">Voltar</button>
+</div>
+
+<script>
+const API = "https://votacao-times.onrender.com";
+
+async function login(){
+    let nickname = document.getElementById("nickname").value.trim();
+    let password = document.getElementById("password").value.trim();
+
+    let res = await fetch(API + "/login", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({nickname,password})
+    });
+
+    let data = await res.json();
+
+    if(data.ok){
+        localStorage.setItem("votacao_user_name", nickname);
+        window.location="votacao.html";
+    } else {
+        alert(data.error);
+    }
+}
+</script>
+
+</body>
+</html>
