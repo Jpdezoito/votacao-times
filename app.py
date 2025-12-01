@@ -198,6 +198,16 @@ def vote():
 
     conn = get_db()
     cur = conn.cursor()
+    # validações adicionais
+    if player_id is None:
+        conn.close()
+        return jsonify({"error": "player_id é obrigatório"}), 400
+
+    # garante que o jogador exista
+    cur.execute("SELECT id FROM players WHERE id = ?", (player_id,))
+    if not cur.fetchone():
+        conn.close()
+        return jsonify({"error": "Jogador não encontrado"}), 400
 
     try:
         cur.execute("INSERT INTO votes (player_id, score, voter_name) VALUES (?, ?, ?)",
@@ -208,6 +218,10 @@ def vote():
     except sqlite3.IntegrityError:
         conn.close()
         return jsonify({"error": "Você já votou neste jogador!"}), 400
+    except Exception as e:
+        # captura outras exceções e retorna mensagem para debugging
+        conn.close()
+        return jsonify({"error": "Erro interno ao gravar voto", "details": str(e)}), 500
 
 
 if __name__ == "__main__":
