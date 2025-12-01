@@ -1,67 +1,85 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import sqlite3
-import os
 import hashlib
+import os
+
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import IntegrityError
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-DB_NAME = "votacao.db"
+# -------------------------------
+# CONFIGURAÇÃO DO BANCO POSTGRES
+# -------------------------------
 
-def get_db():
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    return conn
+db_url = os.environ.get("DATABASE_URL")
+
+# Ajuste necessário para drivers antigos
+if db_url and db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
+
+# Caso esteja rodando local
+if not db_url:
+    db_url = "sqlite:///votacao.db"
+
+engine = create_engine(db_url, future=True)
+
+
+# -------------------------------
+# FUNÇÕES AUXILIARES
+# -------------------------------
 
 def hash_password(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
 
+
+# -------------------------------
+# CRIAÇÃO DAS TABELAS
+# -------------------------------
+
 def init_db():
-    conn = get_db()
-    cur = conn.cursor()
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                nickname TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL
+            )
+        """))
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nickname TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL
-        )
-    """)
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS players (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL
+            )
+        """))
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS players (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS votes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            player_id INTEGER NOT NULL,
-            score REAL NOT NULL,
-            voter_name TEXT,
-            FOREIGN KEY(player_id) REFERENCES players(id),
-            UNIQUE(player_id, voter_name)
-        )
-    """)
-
-    conn.commit()
-    conn.close()
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS votes (
+                id SERIAL PRIMARY KEY,
+                player_id INTEGER NOT NULL,
+                score REAL NOT NULL,
+                voter_name TEXT,
+                UNIQUE(player_id, voter_name),
+                FOREIGN KEY(player_id) REFERENCES players(id)
+            )
+        """))
 
 init_db()
 
-# ------------------------------------------------------------
-# RAIZ
-# ------------------------------------------------------------
+
+# -------------------------------
+# ROTA RAIZ
+# -------------------------------
 @app.route("/")
 def home():
-    return jsonify({"message": "API funcionando! Acesse /players, /register, /login, /vote, etc."})
+    return jsonify({"message": "API funcionando com PostgreSQL!"})
 
-# ------------------------------------------------------------
+
+# -------------------------------
 # CADASTRO
-# ------------------------------------------------------------
+# -------------------------------
 @app.route("/register", methods=["POST"])
 def register():
     data = request.get_json()
@@ -71,71 +89,58 @@ def register():
     if not nickname or not password:
         return jsonify({"error": "Preencha apelido e senha"}), 400
 
-    conn = get_db()
-    cur = conn.cursor()
-
     try:
-        # cria o usuário (login)
-        cur.execute(
-            "INSERT INTO users (nickname, password) VALUES (?, ?)",
-            (nickname, hash_password(password))
-        )
-        # cria também o jogador com o mesmo apelido
-        cur.execute(
-            "INSERT INTO players (name) VALUES (?)",
-            (nickname,)
-        )
-
-        conn.commit()
-        conn.close()
+        with engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO users (nickname, password) VALUES (:nick, :pwd)"),
+                {"nick": nickname, "pwd": hash_password(password)}
+            )
+            conn.execute(
+                text("INSERT INTO players (name) VALUES (:name)"),
+                {"name": nickname}
+            )
         return jsonify({"ok": True})
-    except sqlite3.IntegrityError:
-        conn.close()
+
+    except IntegrityError:
         return jsonify({"error": "Apelido já está em uso"}), 400
 
 
-# ------------------------------------------------------------
+# -------------------------------
 # LOGIN
-# ------------------------------------------------------------
+# -------------------------------
 @app.route("/login", methods=["POST"])
 def login():
     data = request.get_json()
     nickname = (data.get("nickname") or "").strip()
     password = (data.get("password") or "").strip()
 
-    conn = get_db()
-    cur = conn.cursor()
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT * FROM users WHERE nickname = :nick"),
+            {"nick": nickname}
+        ).mappings().first()
 
-    cur.execute("SELECT * FROM users WHERE nickname = ?", (nickname,))
-    user = cur.fetchone()
-
-    if user and user["password"] == hash_password(password):
+    if result and result["password"] == hash_password(password):
         return jsonify({"ok": True})
 
     return jsonify({"error": "Apelido ou senha incorretos"}), 400
 
 
-# ------------------------------------------------------------
-# RESTO DO CÓDIGO DA VOTAÇÃO (igual ao anterior)
-# ------------------------------------------------------------
-
+# -------------------------------
+# LISTAR PLAYERS
+# -------------------------------
 @app.route("/players", methods=["GET"])
 def get_players():
-    conn = get_db()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT p.id, p.name,
-               IFNULL(AVG(v.score), 0) AS avg_score,
-               COUNT(v.id) AS votes
-        FROM players p
-        LEFT JOIN votes v ON v.player_id = p.id
-        GROUP BY p.id, p.name
-        ORDER BY p.name
-    """)
-
-    rows = cur.fetchall()
-    conn.close()
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT p.id, p.name,
+                   COALESCE(AVG(v.score), 0) AS avg_score,
+                   COUNT(v.id) AS votes
+            FROM players p
+            LEFT JOIN votes v ON v.player_id = p.id
+            GROUP BY p.id, p.name
+            ORDER BY p.name
+        """)).mappings().all()
 
     players = []
     for r in rows:
@@ -149,6 +154,9 @@ def get_players():
     return jsonify(players)
 
 
+# -------------------------------
+# ADICIONAR PLAYER
+# -------------------------------
 @app.route("/players", methods=["POST"])
 def add_player():
     data = request.get_json()
@@ -157,33 +165,35 @@ def add_player():
     if not name:
         return jsonify({"error": "Nome é obrigatório"}), 400
 
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("INSERT INTO players (name) VALUES (?)", (name,))
-    conn.commit()
-    player_id = cur.lastrowid
-    conn.close()
+    with engine.begin() as conn:
+        new_id = conn.execute(
+            text("INSERT INTO players (name) VALUES (:name) RETURNING id"),
+            {"name": name}
+        ).scalar_one()
 
-    return jsonify({"id": player_id, "name": name}), 201
+    return jsonify({"id": new_id, "name": name}), 201
 
 
+# -------------------------------
+# REMOVER PLAYER
+# -------------------------------
 @app.route("/players/<int:player_id>", methods=["DELETE"])
 def delete_player(player_id):
-    conn = get_db()
-    cur = conn.cursor()
 
-    cur.execute("DELETE FROM votes WHERE player_id = ?", (player_id,))
-    cur.execute("DELETE FROM players WHERE id = ?", (player_id,))
-
-    conn.commit()
-    conn.close()
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM votes WHERE player_id = :id"), {"id": player_id})
+        conn.execute(text("DELETE FROM players WHERE id = :id"), {"id": player_id})
 
     return jsonify({"ok": True})
 
 
+# -------------------------------
+# VOTAR
+# -------------------------------
 @app.route("/vote", methods=["POST"])
 def vote():
     data = request.get_json()
+
     player_id = data.get("player_id")
     score = data.get("score")
     voter_name = (data.get("voter") or "").strip()
@@ -196,50 +206,50 @@ def vote():
     if score < 0 or score > 10:
         return jsonify({"error": "Nota deve ser entre 0 e 10"}), 400
 
-    conn = get_db()
-    cur = conn.cursor()
-    # validações adicionais
-    if player_id is None:
-        conn.close()
-        return jsonify({"error": "player_id é obrigatório"}), 400
+    with engine.connect() as conn:
+        player = conn.execute(
+            text("SELECT id, name FROM players WHERE id = :id"),
+            {"id": player_id}
+        ).mappings().first()
 
-    # garante que o jogador exista e obtém o nome
-    cur.execute("SELECT id, name FROM players WHERE id = ?", (player_id,))
-    player_row = cur.fetchone()
-    if not player_row:
-        conn.close()
+    if not player:
         return jsonify({"error": "Jogador não encontrado"}), 400
 
-    # evita votar em si mesmo (apelido igual ao do jogador)
-    player_name = (player_row[1] if isinstance(player_row, tuple) else player_row["name"]).strip()
-    if voter_name and player_name and voter_name == player_name:
-        conn.close()
+    if voter_name == player["name"]:
         return jsonify({"error": "Não é permitido votar em si mesmo."}), 400
 
     try:
-        # verifica se já existe voto deste votante para este jogador
-        cur.execute("SELECT id FROM votes WHERE player_id = ? AND voter_name = ?", (player_id, voter_name))
-        row = cur.fetchone()
-        if row:
-            # atualiza o voto existente
-            vote_id = row[0] if isinstance(row, tuple) else row["id"]
-            cur.execute("UPDATE votes SET score = ? WHERE id = ?", (score, vote_id))
-            updated = True
-        else:
-            # insere novo voto
-            cur.execute("INSERT INTO votes (player_id, score, voter_name) VALUES (?, ?, ?)",
-                        (player_id, score, voter_name))
-            updated = False
+        with engine.begin() as conn:
+            existing = conn.execute(
+                text("SELECT id FROM votes WHERE player_id = :pid AND voter_name = :vn"),
+                {"pid": player_id, "vn": voter_name}
+            ).mappings().first()
 
-        conn.commit()
-        conn.close()
+            if existing:
+                conn.execute(
+                    text("UPDATE votes SET score = :s WHERE id = :id"),
+                    {"s": score, "id": existing["id"]}
+                )
+                updated = True
+            else:
+                conn.execute(
+                    text("""
+                        INSERT INTO votes (player_id, score, voter_name)
+                        VALUES (:pid, :s, :vn)
+                    """),
+                    {"pid": player_id, "s": score, "vn": voter_name}
+                )
+                updated = False
+
         return jsonify({"ok": True, "updated": updated})
+
     except Exception as e:
-        # captura outras exceções e retorna mensagem para debugging
-        conn.close()
         return jsonify({"error": "Erro interno ao gravar voto", "details": str(e)}), 500
 
 
+# -------------------------------
+# START
+# -------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
