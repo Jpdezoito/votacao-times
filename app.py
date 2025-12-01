@@ -256,6 +256,45 @@ def delete_player(player_id):
 
 
 # -------------------------------
+@app.route("/delete_account", methods=["POST"])
+def delete_account():
+    """
+    Exclui a conta do próprio usuário, mesmo que ele não apareça na lista de players.
+    Espera JSON: { "nickname": "apelido_do_usuario" }
+    """
+    data = request.get_json(silent=True) or {}
+    nickname = (data.get("nickname") or "").strip()
+
+    if not nickname:
+        return jsonify({"error": "Apelido não informado."}), 400
+
+    with engine.begin() as conn:
+        # tenta achar o player pelo nome
+        player = conn.execute(
+            text("SELECT id FROM players WHERE name = :name"),
+            {"name": nickname}
+        ).mappings().first()
+
+        if player:
+            # apaga votos onde ele é o JOGADOR avaliado
+            conn.execute(
+                text("DELETE FROM votes WHERE player_id = :pid"),
+                {"pid": player["id"]}
+            )
+            # apaga da tabela players
+            conn.execute(
+                text("DELETE FROM players WHERE id = :pid"),
+                {"pid": player["id"]}
+            )
+
+        # apaga o usuário da tabela users (login)
+        conn.execute(
+            text("DELETE FROM users WHERE nickname = :nick"),
+            {"nick": nickname}
+        )
+
+    return jsonify({"ok": True})
+
 # VOTAR
 # -------------------------------
 @app.route("/vote", methods=["POST"])
@@ -315,7 +354,7 @@ def vote():
     except Exception as e:
         return jsonify({"error": "Erro interno ao gravar voto", "details": str(e)}), 500
     
-    
+
 
 @app.route("/set_admin", methods=["POST"])
 def set_admin():
