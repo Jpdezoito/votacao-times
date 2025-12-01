@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <title>Votação para Equilibrar Times</title>
+    <title>Votação</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -10,11 +10,7 @@
             margin: 0;
             padding: 20px;
         }
-
-        h1 {
-            text-align: center;
-        }
-
+        h1 { text-align: center; }
         .container {
             max-width: 900px;
             margin: 0 auto;
@@ -23,50 +19,24 @@
             border-radius: 8px;
             box-shadow: 0 0 10px rgba(0,0,0,0.1);
         }
-
-        .add-player {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-        }
-
-        .add-player input[type="text"] {
-            flex: 1;
-            padding: 8px;
-            font-size: 14px;
-        }
-
-        .add-player button {
-            padding: 8px 16px;
-            cursor: pointer;
-        }
-
         table {
             width: 100%;
             border-collapse: collapse;
+            margin-top: 15px;
         }
-
         th, td {
             border: 1px solid #ddd;
             padding: 8px;
             text-align: center;
         }
-
         th {
             background-color: #007bff;
             color: white;
         }
-
         input[type="number"] {
             width: 70px;
+            padding: 4px;
         }
-
-        .small-text {
-            font-size: 12px;
-            color: #666;
-            margin-top: 10px;
-        }
-
         .remove-btn {
             background: #ff4d4d;
             color: #fff;
@@ -75,188 +45,190 @@
             cursor: pointer;
             border-radius: 4px;
         }
-
-        .remove-btn:hover {
-            background: #e60000;
-        }
-
+        .remove-btn:hover { background: #e60000; }
         .vote-btn {
             padding: 4px 8px;
             cursor: pointer;
         }
+        .small-text {
+            font-size: 12px;
+            color: #666;
+            margin-top: 10px;
+        }
+        .user-info {
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+        .user-info span {
+            font-weight: bold;
+        }
+        button.logout {
+            padding:4px 10px;
+            margin-left:10px;
+            border-radius:6px;
+            border:none;
+            background:#ccc;
+            cursor:pointer;
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Votação para Equilibrar Times</h1>
 
-        <div class="add-player">
-            <input type="text" id="playerName" placeholder="Nome do jogador">
-            <button onclick="addPlayer()">Adicionar Jogador</button>
-        </div>
+<div class="container" id="mainContainer">
+    <h1>Votação para Equilibrar Times</h1>
 
-        <table id="playersTable">
-            <thead>
-                <tr>
-                    <th>Jogador</th>
-                    <th>Nota (0 a 10)</th>
-                    <th>Ação</th>
-                    <th>Média</th>
-                    <th>Votos</th>
-                    <th>Remover</th>
-                </tr>
-            </thead>
-            <tbody id="playersBody">
-                <!-- Linhas dos jogadores vão aqui -->
-            </tbody>
-        </table>
-
-        <p class="small-text">
-            As notas e médias ficam salvas neste navegador (localStorage). Se quiser zerar tudo, apague os dados do site no navegador.
-        </p>
+    <div class="user-info">
+        Logado como: <span id="currentUserName"></span>
+        <button class="logout" onclick="logout()">Sair</button>
     </div>
 
-    <script>
-        // Estrutura dos jogadores:
-        // players = {
-        //   id: { name: "Fulano", total: 0, votes: 0 }
-        // }
+    <table>
+        <thead>
+        <tr>
+            <th>Jogador</th>
+            <th>Nota (0 a 10)</th>
+            <th>Ação</th>
+            <th>Média</th>
+            <th>Votos</th>
+            <th>Remover</th>
+        </tr>
+        </thead>
+        <tbody id="playersBody">
+        <!-- preenchido via JS -->
+        </tbody>
+    </table>
 
-        let players = {};
+    <p class="small-text">
+        Todos os jogadores desta lista são pessoas que fizeram cadastro. <br>
+        As médias e votos são compartilhados entre todos.
+    </p>
+</div>
 
-        function saveData() {
-            localStorage.setItem("players_votacao_times", JSON.stringify(players));
-        }
+<script>
+    const API_URL = "https://votacao-times.onrender.com";
 
-        function loadData() {
-            const data = localStorage.getItem("players_votacao_times");
-            if (data) {
-                players = JSON.parse(data);
-            } else {
-                players = {};
-            }
-        }
+    let playersCache = [];
+    let currentUser = null;
 
-        function renderTable() {
-            const tbody = document.getElementById("playersBody");
-            tbody.innerHTML = "";
+    function logout() {
+        localStorage.removeItem("votacao_user_name");
+        window.location = "login.html";
+    }
 
-            Object.keys(players).forEach(id => {
-                const p = players[id];
-                const tr = document.createElement("tr");
-
-                // Nome
-                const tdName = document.createElement("td");
-                tdName.textContent = p.name;
-                tr.appendChild(tdName);
-
-                // Input nota
-                const tdInput = document.createElement("td");
-                const input = document.createElement("input");
-                input.type = "number";
-                input.min = "0";
-                input.max = "10";
-                input.step = "0.1";
-                input.id = "nota_" + id;
-                tdInput.appendChild(input);
-                tr.appendChild(tdInput);
-
-                // Botão votar
-                const tdAction = document.createElement("td");
-                const btn = document.createElement("button");
-                btn.textContent = "Votar";
-                btn.className = "vote-btn";
-                btn.onclick = function() {
-                    votePlayer(id);
-                };
-                tdAction.appendChild(btn);
-                tr.appendChild(tdAction);
-
-                // Média
-                const tdMedia = document.createElement("td");
-                tdMedia.id = "media_" + id;
-                const media = p.votes > 0 ? (p.total / p.votes).toFixed(2) : "-";
-                tdMedia.textContent = media;
-                tr.appendChild(tdMedia);
-
-                // Votos
-                const tdVotos = document.createElement("td");
-                tdVotos.id = "votos_" + id;
-                tdVotos.textContent = p.votes;
-                tr.appendChild(tdVotos);
-
-                // Remover
-                const tdRemove = document.createElement("td");
-                const removeBtn = document.createElement("button");
-                removeBtn.textContent = "X";
-                removeBtn.className = "remove-btn";
-                removeBtn.onclick = function() {
-                    removePlayer(id);
-                };
-                tdRemove.appendChild(removeBtn);
-                tr.appendChild(tdRemove);
-
-                tbody.appendChild(tr);
-            });
-        }
-
-        function addPlayer() {
-            const input = document.getElementById("playerName");
-            const name = input.value.trim();
-
-            if (!name) {
-                alert("Digite o nome do jogador.");
-                return;
-            }
-
-            // Cria um ID simples
-            const id = Date.now().toString();
-
-            players[id] = {
-                name: name,
-                total: 0,
-                votes: 0
-            };
-
-            input.value = "";
-            saveData();
-            renderTable();
-        }
-
-        function votePlayer(id) {
-            const input = document.getElementById("nota_" + id);
-            let nota = parseFloat(input.value);
-
-            if (isNaN(nota) || nota < 0 || nota > 10) {
-                alert("Digite uma nota entre 0 e 10.");
-                return;
-            }
-
-            players[id].total += nota;
-            players[id].votes += 1;
-
-            // Atualiza na tela
-            const media = (players[id].total / players[id].votes).toFixed(2);
-            document.getElementById("media_" + id).textContent = media;
-            document.getElementById("votos_" + id).textContent = players[id].votes;
-
-            // Limpa o campo de nota
-            input.value = "";
-
-            saveData();
-        }
-
-        function removePlayer(id) {
-            if (confirm("Remover este jogador?")) {
-                delete players[id];
-                saveData();
-                renderTable();
-            }
-        }
-
-        // Inicialização
-        loadData();
+    async function loadPlayers() {
+        const res = await fetch(API_URL + "/players");
+        playersCache = await res.json();
         renderTable();
-    </script>
+    }
+
+    function renderTable() {
+        const tbody = document.getElementById("playersBody");
+        tbody.innerHTML = "";
+
+        playersCache.forEach(p => {
+            const tr = document.createElement("tr");
+
+            const tdName = document.createElement("td");
+            tdName.textContent = p.name;
+            tr.appendChild(tdName);
+
+            const tdInput = document.createElement("td");
+            const input = document.createElement("input");
+            input.type = "number";
+            input.min = "0";
+            input.max = "10";
+            input.step = "0.1";
+            input.id = "nota_" + p.id;
+            tdInput.appendChild(input);
+            tr.appendChild(tdInput);
+
+            const tdAction = document.createElement("td");
+            const btn = document.createElement("button");
+            btn.textContent = "Votar";
+            btn.className = "vote-btn";
+            btn.onclick = () => votePlayer(p.id);
+            tdAction.appendChild(btn);
+            tr.appendChild(tdAction);
+
+            const tdMedia = document.createElement("td");
+            tdMedia.id = "media_" + p.id;
+            tdMedia.textContent = (p.votes > 0 && p.avg_score != null)
+                ? p.avg_score.toFixed(2)
+                : "-";
+            tr.appendChild(tdMedia);
+
+            const tdVotos = document.createElement("td");
+            tdVotos.id = "votos_" + p.id;
+            tdVotos.textContent = p.votes;
+            tr.appendChild(tdVotos);
+
+            const tdRemove = document.createElement("td");
+            const rbtn = document.createElement("button");
+            rbtn.textContent = "X";
+            rbtn.className = "remove-btn";
+            rbtn.onclick = () => removePlayer(p.id);
+            tdRemove.appendChild(rbtn);
+            tr.appendChild(tdRemove);
+
+            tbody.appendChild(tr);
+        });
+    }
+
+    async function votePlayer(id) {
+        if (!currentUser) {
+            alert("Faça login antes de votar.");
+            window.location = "login.html";
+            return;
+        }
+
+        const input = document.getElementById("nota_" + id);
+        const nota = parseFloat(input.value);
+
+        if (isNaN(nota) || nota < 0 || nota > 10) {
+            alert("Digite uma nota entre 0 e 10.");
+            return;
+        }
+
+        await fetch(API_URL + "/vote", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                player_id: id,
+                score: nota,
+                voter: currentUser
+            })
+        });
+
+        input.value = "";
+        await loadPlayers();
+    }
+
+    async function removePlayer(id) {
+        if (!currentUser) {
+            alert("Faça login antes de remover jogadores.");
+            return;
+        }
+
+        if (!confirm("Remover este jogador e seus votos?")) return;
+
+        await fetch(API_URL + "/players/" + id, {
+            method: "DELETE"
+        });
+
+        await loadPlayers();
+    }
+
+    (function init() {
+        const savedName = localStorage.getItem("votacao_user_name");
+        if (!savedName) {
+            window.location = "login.html";
+            return;
+        }
+        currentUser = savedName;
+        document.getElementById("currentUserName").textContent = currentUser;
+        loadPlayers();
+    })();
+</script>
+
 </body>
 </html>
