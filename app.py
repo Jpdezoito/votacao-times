@@ -6,6 +6,9 @@ import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
+DEFAULT_ADMINS = ["maozinha"]
+
+
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
@@ -40,14 +43,23 @@ def hash_password(pwd: str) -> str:
 
 def init_db():
     with engine.begin() as conn:
+        # Tabela de usuários com flag de admin
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 nickname TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL
+                password TEXT NOT NULL,
+                is_admin BOOLEAN NOT NULL DEFAULT FALSE
             )
         """))
 
+        # Garante coluna is_admin mesmo se a tabela já existia
+        conn.execute(text("""
+            ALTER TABLE users
+            ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE
+        """))
+
+        # Tabela de jogadores
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS players (
                 id SERIAL PRIMARY KEY,
@@ -55,6 +67,7 @@ def init_db():
             )
         """))
 
+        # Tabela de votos
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS votes (
                 id SERIAL PRIMARY KEY,
@@ -65,6 +78,13 @@ def init_db():
                 FOREIGN KEY(player_id) REFERENCES players(id)
             )
         """))
+
+        # Marca os apelidos definidos como admins
+        for nick in DEFAULT_ADMINS:
+            conn.execute(
+                text("UPDATE users SET is_admin = TRUE WHERE nickname = :nick"),
+                {"nick": nick}
+            )
 
 init_db()
 
@@ -80,29 +100,26 @@ def home():
 # -------------------------------
 # CADASTRO
 # -------------------------------
-@app.route("/register", methods=["POST"])
-def register():
+@app.route("/login", methods=["POST"])
+def login():
     data = request.get_json()
     nickname = (data.get("nickname") or "").strip()
     password = (data.get("password") or "").strip()
 
-    if not nickname or not password:
-        return jsonify({"error": "Preencha apelido e senha"}), 400
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT * FROM users WHERE nickname = :nick"),
+            {"nick": nickname}
+        ).mappings().first()
 
-    try:
-        with engine.begin() as conn:
-            conn.execute(
-                text("INSERT INTO users (nickname, password) VALUES (:nick, :pwd)"),
-                {"nick": nickname, "pwd": hash_password(password)}
-            )
-            conn.execute(
-                text("INSERT INTO players (name) VALUES (:name)"),
-                {"name": nickname}
-            )
-        return jsonify({"ok": True})
+    if result and result["password"] == hash_password(password):
+        return jsonify({
+            "ok": True,
+            "is_admin": bool(result.get("is_admin", False))
+        })
 
-    except IntegrityError:
-        return jsonify({"error": "Apelido já está em uso"}), 400
+    return jsonify({"error": "Apelido ou senha incorretos"}), 400
+
 
 
 # -------------------------------
@@ -133,12 +150,16 @@ def login():
 def get_players():
     with engine.connect() as conn:
         rows = conn.execute(text("""
-            SELECT p.id, p.name,
-                   COALESCE(AVG(v.score), 0) AS avg_score,
-                   COUNT(v.id) AS votes
+            SELECT
+                p.id,
+                p.name,
+                COALESCE(AVG(v.score), 0) AS avg_score,
+                COUNT(v.id) AS votes,
+                COALESCE(u.is_admin, FALSE) AS is_admin
             FROM players p
             LEFT JOIN votes v ON v.player_id = p.id
-            GROUP BY p.id, p.name
+            LEFT JOIN users u ON u.nickname = p.name
+            GROUP BY p.id, p.name, u.is_admin
             ORDER BY p.name
         """)).mappings().all()
 
@@ -148,10 +169,12 @@ def get_players():
             "id": r["id"],
             "name": r["name"],
             "avg_score": round(r["avg_score"], 2) if r["votes"] > 0 else None,
-            "votes": r["votes"]
+            "votes": r["votes"],
+            "is_admin": bool(r["is_admin"])
         })
 
     return jsonify(players)
+
 
 
 # -------------------------------
@@ -179,7 +202,6 @@ def add_player():
 # -------------------------------
 @app.route("/players/<int:player_id>", methods=["DELETE"])
 def delete_player(player_id):
-    # JSON esperado: { "requester": "apelido_logado" }
     data = request.get_json(silent=True) or {}
     requester = (data.get("requester") or "").strip()
 
@@ -195,28 +217,39 @@ def delete_player(player_id):
         if not player:
             return jsonify({"error": "Jogador não encontrado."}), 404
 
-        # só permite remover o próprio cadastro
-        if player["name"] != requester:
+        # pega info de quem está pedindo
+        req_user = conn.execute(
+            text("SELECT is_admin FROM users WHERE nickname = :nick"),
+            {"nick": requester}
+        ).mappings().first()
+
+        if not req_user:
+            return jsonify({"error": "Usuário solicitante não encontrado."}), 404
+
+        is_admin = bool(req_user["is_admin"])
+
+        # só pode remover se for o próprio ou admin
+        if (player["name"] != requester) and (not is_admin):
             return jsonify(
                 {"error": "Você só pode remover o seu próprio cadastro."}
             ), 403
 
-        # remove votos desse jogador
+        # apaga votos desse jogador
         conn.execute(
             text("DELETE FROM votes WHERE player_id = :id"),
             {"id": player_id}
         )
 
-        # remove da tabela players
+        # apaga da tabela players
         conn.execute(
             text("DELETE FROM players WHERE id = :id"),
             {"id": player_id}
         )
 
-        # remove também da tabela users (login)
+        # apaga da tabela users (login) do jogador removido
         conn.execute(
             text("DELETE FROM users WHERE nickname = :nick"),
-            {"nick": requester}
+            {"nick": player["name"]}
         )
 
     return jsonify({"ok": True})
@@ -281,7 +314,43 @@ def vote():
 
     except Exception as e:
         return jsonify({"error": "Erro interno ao gravar voto", "details": str(e)}), 500
+    
+    
 
+@app.route("/set_admin", methods=["POST"])
+def set_admin():
+    data = request.get_json()
+    requester = (data.get("requester") or "").strip()
+    target = (data.get("target") or "").strip()
+    make_admin = bool(data.get("is_admin", True))
+
+    if not requester or not target:
+        return jsonify({"error": "Dados inválidos."}), 400
+
+    with engine.begin() as conn:
+        # verifica se quem está pedindo é admin
+        req_user = conn.execute(
+            text("SELECT is_admin FROM users WHERE nickname = :nick"),
+            {"nick": requester}
+        ).mappings().first()
+
+        if not req_user or not req_user["is_admin"]:
+            return jsonify({"error": "Apenas administradores podem alterar privilégios."}), 403
+
+        user = conn.execute(
+            text("SELECT id FROM users WHERE nickname = :nick"),
+            {"nick": target}
+        ).mappings().first()
+
+        if not user:
+            return jsonify({"error": "Usuário alvo não encontrado."}), 404
+
+        conn.execute(
+            text("UPDATE users SET is_admin = :adm WHERE nickname = :nick"),
+            {"adm": make_admin, "nick": target}
+        )
+
+    return jsonify({"ok": True})
 
 # -------------------------------
 # START
