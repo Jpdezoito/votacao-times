@@ -217,14 +217,24 @@ def vote():
         return jsonify({"error": "Não é permitido votar em si mesmo."}), 400
 
     try:
-        cur.execute("INSERT INTO votes (player_id, score, voter_name) VALUES (?, ?, ?)",
-                    (player_id, score, voter_name))
+        # verifica se já existe voto deste votante para este jogador
+        cur.execute("SELECT id FROM votes WHERE player_id = ? AND voter_name = ?", (player_id, voter_name))
+        existed = cur.fetchone() is not None
+
+        # usa UPSERT para inserir ou atualizar o voto
+        # sintaxe SQLite: ON CONFLICT(player_id, voter_name) DO UPDATE SET score=excluded.score
+        cur.execute(
+            """
+            INSERT INTO votes (player_id, score, voter_name)
+            VALUES (?, ?, ?)
+            ON CONFLICT(player_id, voter_name) DO UPDATE SET score=excluded.score
+            """,
+            (player_id, score, voter_name)
+        )
+
         conn.commit()
         conn.close()
-        return jsonify({"ok": True})
-    except sqlite3.IntegrityError:
-        conn.close()
-        return jsonify({"error": "Você já votou neste jogador!"}), 400
+        return jsonify({"ok": True, "updated": existed})
     except Exception as e:
         # captura outras exceções e retorna mensagem para debugging
         conn.close()
